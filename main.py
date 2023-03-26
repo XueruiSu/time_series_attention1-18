@@ -9,6 +9,7 @@ from torch.autograd import Variable
 from sklearn.metrics import mean_squared_error
 from sklearn.metrics import r2_score
 from sklearn import preprocessing
+from torch.nn import TransformerEncoder, TransformerEncoderLayer
 
 # 获取训练集-------------------------------------------------------------------
 def get_train_data(train_data, time_step=3):
@@ -109,6 +110,40 @@ class MLP(nn.Module):
         x = F.relu(self.linear3(x))
         return self.linear4(x).squeeze()
 
+class TransformerRegression(nn.Module):
+    def __init__(self, input_dim, output_dim, d_model=128, nhead=4, num_layers=4):
+        super().__init__()
+        self.d_model = d_model
+        self.output_dim = output_dim
+
+        # 定义Transformer的编码器
+        encoder_layer = TransformerEncoderLayer(d_model=d_model, nhead=nhead)
+        self.transformer_encoder = TransformerEncoder(encoder_layer, num_layers=num_layers)
+
+        # 定义Transformer的解码器
+        decoder_layer = nn.TransformerDecoderLayer(d_model=d_model, nhead=nhead)
+        self.transformer_decoder = nn.TransformerDecoder(decoder_layer, num_layers=num_layers)
+
+        # 定义全连接层
+        self.fc_in = nn.Linear(input_dim, d_model)
+        self.fc = nn.Linear(d_model, output_dim)
+
+    def forward(self, x):
+        # x: (seq_len, batch_size)
+        src = self.fc_in(x.view(x.shape[0], x.shape[1], 1).permute(1, 0, 2))  # (batch_size, seq_len, input_dim)
+
+        # 编码
+        encoded = self.transformer_encoder(src)
+
+        # 解码
+        decoded = self.transformer_decoder(src, encoded)
+
+        # 全连接层映射
+        out = self.fc(decoded[-1])  # 取解码结果的最后一个时间步作为输出
+
+        return out.squeeze()
+
+
 BATCH_SIZE = 32
 class MLE(object):
     def __init__(self, x_t, device, actor_lr, model_type='Attention'):
@@ -119,6 +154,8 @@ class MLE(object):
             self.model = MLP().to(self.device)
         elif model_type == 'Attention':
             self.model = ATTENTION().to(self.device)
+        elif model_type == 'Trans':
+            self.model = TransformerRegression(input_dim=1, output_dim=1).to(self.device)
         else:
             self.model = torch.nn.LSTM(input_size=1, hidden_size=1, num_layers=3, batch_first=True).to(self.device)
         self.loss_func = nn.MSELoss()
@@ -156,8 +193,8 @@ print(device)
 print(torch.cuda.is_available())
 print(torch.__version__)
 torch.manual_seed(0)
-data_dict = pd.read_excel('./data.xlsx', header=0, sheet_name='Sheet1')
-data = np.array(data_dict["加工周期（天）"])
+data_dict = pd.read_excel('./数据（公开）.xlsx', usecols=[1], header=None)
+data = np.array(data_dict)[:,0]
 data_mean, data_std = data.mean(), data.std()
 data = (data - data_mean) / data_std
 data_s, data_sn, data = get_train_data(data)
@@ -168,8 +205,8 @@ data_sn = torch.from_numpy(data_sn).float()
 torch_dataset = Data.TensorDataset(data_s[:], data_sn[:])
 # 把Dataset放入Dataloader
 loader = Data.DataLoader(dataset=torch_dataset, batch_size=BATCH_SIZE, shuffle=True, drop_last=False)
-model_type = ['MLP', 'Attention', 'LSTM']
-model_num = 2
+model_type = ['MLP', 'Attention', 'LSTM', 'Trans']
+model_num = 0
 mle = MLE(data, device, 1e-4, model_type[model_num])
 loss_dict = mle.train(loader=loader, EPOCH=1000)
 torch.save(mle, f"./model/{model_type[model_num]}.file")
@@ -204,18 +241,21 @@ plt.yscale('log')
 plt.title("Loss Figure")
 plt.savefig(f"./figure/{model_type[model_num]}_Loss.png")
 plt.show()
+
 # 绘制所有损失函数图像
 loss1 = np.load(f"./results/{model_type[0]}.npz")['loss_dict']
 loss2 = np.load(f"./results/{model_type[1]}.npz")['loss_dict']
 loss3 = np.load(f"./results/{model_type[2]}.npz")['loss_dict']
+loss4 = np.load(f"./results/{model_type[3]}.npz")['loss_dict']
 plt.figure()
 plt.plot(average(loss1), label=f'Loss_{model_type[0]}', color='b')
 plt.plot(average(loss2), label=f'Loss_{model_type[1]}', color='r')
 plt.plot(average(loss3), label=f'Loss_{model_type[2]}', color='g')
+plt.plot(average(loss4), label=f'Loss_{model_type[3]}')
 plt.legend()
 plt.xlabel("Iteration")
 plt.ylabel("Loss")
 plt.yscale('log')
 plt.title("Loss Figure")
-plt.savefig(f"./figure/{model_type[model_num]}_Loss_all.png")
+plt.savefig(f"./figure/Loss_all.png")
 plt.show()
